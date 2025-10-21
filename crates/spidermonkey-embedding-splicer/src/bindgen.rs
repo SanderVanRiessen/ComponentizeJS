@@ -205,8 +205,7 @@ pub fn componentize_bindgen(
             let item = items.first().unwrap();
             if let Some(resource) = resource {
                 let export_name = resource.to_upper_camel_case();
-                let binding_name =
-                    binding_name_import(&export_name, &item.iface_name, &item.binding_name);
+                let binding_name = binding_name_import(&export_name, &item.iface_name, &specifier);
                 if item.iface {
                     specifier_list.push(format!("{export_name}: import_{binding_name}"));
                 } else {
@@ -216,11 +215,12 @@ pub fn componentize_bindgen(
                 for BindingItem {
                     iface,
                     name,
-                    binding_name,
+                    iface_name,
                     ..
                 } in items
                 {
                     let export_name = name.to_lower_camel_case();
+                    let binding_name = binding_name_import(&export_name, &iface_name, &specifier);
                     if *iface {
                         specifier_list.push(format!("{export_name}: import_{binding_name}"));
                     } else {
@@ -256,29 +256,41 @@ pub fn componentize_bindgen(
                     let resource_name_camel = ty.name.as_ref().unwrap().to_lower_camel_case();
                     let resource_name_kebab = ty.name.as_ref().unwrap().to_kebab_case();
                     let module_name = format!("[export]{key_name}");
-                    resource_bindings.push(format!("{iface_prefix}new${resource_name_camel}"));
+                    let package_name = key_name
+                        .clone()
+                        .split("/")
+                        .collect::<Vec<_>>()
+                        .first()
+                        .unwrap_or_else(|| &"")
+                        .replace(":", "_");
+                    resource_bindings.push(format!(
+                        "{package_name}_{iface_prefix}new${resource_name_camel}"
+                    ));
                     resource_imports.push((
                         module_name.clone(),
                         format!("[resource-new]{resource_name_kebab}"),
                         1,
                     ));
-                    resource_bindings.push(format!("{iface_prefix}rep${resource_name_camel}"));
+                    resource_bindings.push(format!(
+                        "{package_name}_{iface_prefix}rep${resource_name_camel}"
+                    ));
                     resource_imports.push((
                         module_name.clone(),
                         format!("[resource-rep]{resource_name_kebab}"),
                         1,
                     ));
-                    resource_bindings
-                        .push(format!("export${iface_prefix}drop${resource_name_camel}"));
+                    resource_bindings.push(format!(
+                        "export${package_name}_{iface_prefix}drop${resource_name_camel}"
+                    ));
                     resource_imports.push((
                         module_name.clone(),
                         format!("[resource-drop]{resource_name_kebab}"),
                         0,
                     ));
                     finalization_registries.push(format!(
-                        "const finalizationRegistry_export${iface_prefix}{resource_name_camel} = \
+                        "const finalizationRegistry_export${package_name}_{iface_prefix}{resource_name_camel} = \
                          new FinalizationRegistry((handle) => {{
-                             $resource_export${iface_prefix}drop${resource_name_camel}(handle);
+                             $resource_export${package_name}_{iface_prefix}drop${resource_name_camel}(handle);
                          }});
                         "
                     ));
@@ -331,17 +343,25 @@ pub fn componentize_bindgen(
         };
         let resource_name = ty.name.as_deref().unwrap();
         let prefix = prefix.as_deref().unwrap_or("");
+        let package_name = impt
+            .split("/")
+            .collect::<Vec<_>>()
+            .first()
+            .unwrap_or_else(|| &"")
+            .replace(":", "_");
         let resource_name_camel = resource_name.to_lower_camel_case();
         let resource_name_kebab = resource_name.to_kebab_case();
 
         finalization_registries.push(format!(
-            "const finalizationRegistry_import${prefix}{resource_name_camel} = \
+            "const finalizationRegistry_import${package_name}_{prefix}{resource_name_camel} = \
              new FinalizationRegistry((handle) => {{
-                 $resource_import${prefix}drop${resource_name_camel}(handle);
+                 $resource_import${package_name}_{prefix}drop${resource_name_camel}(handle);
              }});
             "
         ));
-        resource_bindings.push(format!("import${prefix}drop${resource_name_camel}"));
+        resource_bindings.push(format!(
+            "import${package_name}_{prefix}drop${resource_name_camel}"
+        ));
         resource_imports.push((impt, format!("[resource-drop]{resource_name_kebab}"), 0));
     }
 
@@ -502,13 +522,14 @@ impl JsBindgen<'_> {
         iface_name: &Option<String>,
         functions: Vec<(&str, &Function)>,
     ) {
-        let name = binding_name(
+        let name = binding_name_import(
             &self.resolve.types[resource]
                 .name
                 .as_ref()
                 .unwrap()
                 .to_upper_camel_case(),
             iface_name,
+            import_name,
         );
 
         uwriteln!(self.src, "\nclass import_{name} {{");
@@ -526,6 +547,13 @@ impl JsBindgen<'_> {
             .unwrap()
             .to_lower_camel_case();
 
+        let package_name = import_name
+            .split("/")
+            .collect::<Vec<_>>()
+            .first()
+            .unwrap_or_else(|| &"")
+            .replace(":", "_");
+
         let prefix = iface_name
             .as_deref()
             .map(|s| format!("{s}$"))
@@ -538,8 +566,8 @@ impl JsBindgen<'_> {
             self.src,
             "
                 [{dispose_symbol}]() {{
-                    finalizationRegistry_import${prefix}{lower_camel}.unregister(this);
-                    $resource_import${prefix}drop${lower_camel}(this[{resource_symbol}]);
+                    finalizationRegistry_import${package_name}_{prefix}{lower_camel}.unregister(this);
+                    $resource_import${package_name}_{prefix}drop${lower_camel}(this[{resource_symbol}]);
                     this[{resource_symbol}] = undefined;
                 }}
         }}
@@ -786,7 +814,20 @@ impl JsBindgen<'_> {
                         }
                     }
                     TypeOwner::Interface(id) => {
-                        interface_name(self.resolve, *id).map(|s| format!("{s}$"))
+                        let name = &self.resolve.id_of(*id);
+                        let package_name = name
+                            .clone()
+                            .unwrap_or_else(|| "".to_string())
+                            .split("/")
+                            .next()
+                            .unwrap_or_else(|| &"")
+                            .replace(":", "_");
+                        let iface_name = interface_name(self.resolve, *id).map(|s| format!("{s}$"));
+                        Some(format!(
+                            "{}_{}",
+                            package_name,
+                            iface_name.unwrap_or_else(|| "".to_string())
+                        ))
                     }
                     TypeOwner::None => unreachable!(),
                 };
@@ -953,7 +994,7 @@ impl JsBindgen<'_> {
 
         let binding_name = format!(
             "export_{}",
-            binding_name(&resource.func_name(fn_name), &iface_name)
+            binding_name_import(&resource.func_name(fn_name), &iface_name, &name)
         );
 
         // all exports are supported as async functions
@@ -1292,14 +1333,23 @@ fn interface_name_from_string(name: &str) -> Option<String> {
     iface_name
 }
 
-fn binding_name(func_name: &str, iface_name: &Option<String>) -> String {
-    match iface_name {
-        Some(iface_name) => format!("{iface_name}${func_name}"),
-        None => func_name.to_string(),
-    }
-}
-
+/// Determine the binding name of a given import
+/// example wit:
+/// package local:hello;
+/// interface greeter {
+///   greet(name: string): string;
+/// }
+/// word main {
+///  export greeter;
+/// }
+///
+/// # Arguments
+/// * `func_name` - function name (e.g. `greet`)
+/// * `iface_name` - an interface name, if present (e.g. `greeter`)
+/// * `import_name` - qualified import specifier (e.g. `local:hello`)
+///
 fn binding_name_import(func_name: &str, iface_name: &Option<String>, import_name: &str) -> String {
+    // import_name is only valid when FunctionKind is Freestanding
     if import_name != "<<INVALID>>" {
         let valid_import = import_name
             .chars()
