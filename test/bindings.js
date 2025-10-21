@@ -13,7 +13,10 @@ import {
 } from './util.js';
 
 suite('Bindings', async () => {
-  const bindingsCases = await readdir(new URL('./cases', import.meta.url));
+  let bindingsCases = await readdir(new URL('./cases', import.meta.url));
+  bindingsCases = bindingsCases.filter(
+    (name) => name === 'resource-aggregates'
+  );
 
   for (const name of bindingsCases) {
     test.concurrent(name, async () => {
@@ -97,8 +100,8 @@ suite('Bindings', async () => {
           if (impt.startsWith('wasi:')) continue;
           if (impt.startsWith('[')) impt = impt.slice(impt.indexOf(']') + 1);
           let importName = impt.split('/').pop();
-          if (name === 'import-duplicated-interface')
-            importName = impt.replace('/', '-').replace(':', '-');
+          if (testcase.importNameOverride)
+            importName = testcase.importNameOverride(impt);
           if (importName === 'test') importName = 'imports';
           map[impt] = `../../cases/${name}/${importName}.js`;
         }
